@@ -1788,6 +1788,70 @@ fn hole_on_surface(st: &ModelState, p: Vec3, dir: Vec3) -> Vec3 {
     best.unwrap_or(p)
 }
 
+/// The faces of the model that pass through `p`: for each, the outward normal there (the
+/// surface's own normal for planes, cylinders, cones and spheres, turned the way the face looks
+/// out of its body; the mesh facet's otherwise) and how far `p` is from it. Only faces within
+/// `reach` of `p`, nearest first.
+fn faces_through(st: &ModelState, p: Vec3, reach: f64) -> Vec<(f64, Vec3)> {
+    let mut out: Vec<(f64, Vec3)> = Vec::new();
+    for b in st.bodies.iter().filter(|b| !b.body.is_mesh()) {
+        let m = b.mesh();
+        // The nearest facet of each face of this body.
+        let mut near: BTreeMap<u32, (f64, Vec3)> = BTreeMap::new();
+        for (t, f) in m.triangles.iter().zip(&m.tri_face) {
+            let Some([a, bb, c]) = m.tri(t) else { continue };
+            let d = crate::appearance::closest_on_triangle(p, a, bb, c).dist(p);
+            let Some(n) = (bb - a).cross(c - a).normalized() else { continue };
+            if d <= reach && near.get(f).is_none_or(|(x, _)| d < *x) {
+                near.insert(*f, (d, n));
+            }
+        }
+        for (f, (d, facet)) in near {
+            let exact = match kernel::face_surface(&b.body, f as usize) {
+                Some(kernel::FaceSurface::Plane { normal, .. }) => Some(normal),
+                Some(kernel::FaceSurface::Cylinder { origin, axis, .. }) => {
+                    let v = p - origin;
+                    (v - axis * v.dot(axis)).normalized()
+                }
+                Some(kernel::FaceSurface::Sphere { center, .. }) => (p - center).normalized(),
+                _ => None,
+            };
+            let n = match exact {
+                Some(n) if n.dot(facet) < 0.0 => -n,
+                Some(n) => n,
+                None => facet,
+            };
+            out.push((d, n));
+        }
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out
+}
+
+/// The way a hole placed at `p` on a face drills: into the material, against the outward normal
+/// of the face nearest `p` (within its body's pick tolerance). None when no face is there.
+pub fn hole_direction_at(st: &ModelState, p: Vec3) -> Option<Vec3> {
+    let reach = st.bodies.iter().map(crate::appearance::pick_tolerance).fold(0.0, f64::max);
+    faces_through(st, p, reach).first().map(|(_, n)| -*n)
+}
+
+/// A hole placed on a face drills into the material: when its direction leaves every face it
+/// starts on (as designs saved before format 18 can say: their direction was taken from any face
+/// whose plane passed near the point, such as the other side of a thin plate or a face of another
+/// body at the same height), it is mirrored in the face it starts on, so it goes in at the same
+/// angle. A direction that enters a face there, or a spot on no face, is kept.
+fn hole_dir_into_face(st: &ModelState, p: Vec3, dir: Vec3) -> Vec3 {
+    let size = st.bodies.iter().map(|b| b.body.size()).fold(1.0, f64::max);
+    let faces = faces_through(st, p, size * 1e-5);
+    if faces.is_empty() || faces.iter().any(|(_, n)| n.dot(dir) < -1e-9) {
+        return dir;
+    }
+    match faces.iter().map(|(_, n)| *n).max_by(|a, b| a.dot(dir).total_cmp(&b.dot(dir))) {
+        Some(n) if n.dot(dir) > 1e-9 => (dir - n * (2.0 * n.dot(dir))).normalized().unwrap_or(dir),
+        _ => dir,
+    }
+}
+
 /// Where a picked edge sat in its body: its direction (zero for curved edges) and the body's
 /// bounding box at the time.
 #[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
@@ -2003,7 +2067,12 @@ fn hole_spots(st: &ModelState, f: &Feature) -> Result<(Vec<Vec3>, Vec3)> {
             let dir = sketch_hole_dir(st, &v, ss.plane.normal());
             (v, dir)
         }
-        None => (vec![*position], direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?),
+        None => {
+            let dir = direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
+            let at = hole_on_surface(st, *position, dir);
+            let dir = hole_dir_into_face(st, at, dir);
+            return Ok((vec![hole_on_surface(st, at, dir)], dir));
+        }
     };
     if spots.is_empty() || spots.len() > 10_000 {
         return Err(DocError::Invalid("a hole needs 1…10000 points".into()));
@@ -2044,7 +2113,10 @@ fn hole_spots_raw(st: &ModelState, f: &Feature) -> Result<(Vec<Vec3>, Vec3)> {
             let dir = sketch_hole_dir(st, &v, ss.plane.normal());
             Ok((v, dir))
         }
-        None => Ok((vec![*position], direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?)),
+        None => {
+            let dir = direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
+            Ok((vec![*position], hole_dir_into_face(st, hole_on_surface(st, *position, dir), dir)))
+        }
     }
 }
 
