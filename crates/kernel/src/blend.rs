@@ -84,6 +84,23 @@ fn rebuild_face_dropping(f: &mt::Face, subst: &HashMap<mt::EdgeID, mt::Edge>, dr
         }
         wires.push(mt::Wire::from(out));
     }
+    // A face on a periodic surface running along its seam edge twice (as a STEP file gives it)
+    // keeps doing so: such a wire isn't simple, which is valid there.
+    let seam_twice = |ws: &[mt::Wire]| {
+        ws.iter().any(|w| {
+            let ids: Vec<mt::EdgeID> = w.edge_iter().map(|e| e.id()).collect();
+            ids.iter().enumerate().any(|(k, x)| ids.iter().skip(k + 1).any(|y| y == x))
+        })
+    };
+    let had_seam = seam_twice(&f.absolute_boundaries());
+    let closed = wires.iter().all(|w| w.is_closed());
+    if had_seam && closed && seam_twice(&wires) && mt::Face::try_new(wires.clone(), f.surface()).is_err() {
+        let mut nf = mt::Face::new_unchecked(wires, f.surface());
+        if !f.orientation() {
+            nf.invert();
+        }
+        return Ok(nf);
+    }
     crate::heal::absolute_face(f, wires).ok_or_else(|| KernelError::Failed("blend: a face could not be rebuilt".into()))
 }
 
@@ -2083,6 +2100,39 @@ mod tests {
             let want = area * std::f64::consts::PI * (12.0 - c);
             let removed = v0 - vol(&out);
             assert!((removed - want).abs() < want * 2e-3, "{removed} vs {want}");
+        }
+    }
+
+    #[test]
+    fn a_blend_ends_on_a_face_running_along_its_seam_twice() {
+        // #691: a pocket's floor edge along its straight wall ends on a boss's cylinder, which a
+        // STEP file gives as one face running along its seam edge twice. The rebuilt face keeps
+        // doing so.
+        let b = crate::build::box_solid(Vec3::new(-55.0, -20.0, -30.0), Vec3::new(55.0, 50.0, 0.0)).unwrap();
+        let boss = crate::build::cylinder(Vec3::new(55.0, 15.0, -50.0), Vec3::Z, 25.0, 50.0).unwrap();
+        let b = crate::ops::boolean(&b, &boss, crate::BoolOp::Union).unwrap().unwrap();
+        let pocket = crate::build::box_solid(Vec3::new(-45.0, -21.0, -15.0), Vec3::new(55.0, 10.0, 1.0)).unwrap();
+        let wall = crate::build::cylinder(Vec3::new(55.0, 15.0, -20.0), Vec3::Z, 25.0, 30.0).unwrap();
+        let pocket = crate::ops::boolean(&pocket, &wall, crate::BoolOp::Cut).unwrap().unwrap();
+        let made = crate::ops::boolean(&b, &pocket, crate::BoolOp::Cut).unwrap().unwrap();
+        let body = crate::step_import(&crate::step_export(&[&made], "test").unwrap()).unwrap().bodies.remove(0).body;
+        let seam_twice = body.solid.face_iter().any(|f| {
+            f.absolute_boundaries().iter().any(|w| {
+                let ids: Vec<mt::EdgeID> = w.edge_iter().map(|e| e.id()).collect();
+                ids.iter().enumerate().any(|(k, x)| ids.iter().skip(k + 1).any(|y| y == x))
+            })
+        });
+        assert!(seam_twice);
+        let vol = |b: &Body| b.tessellate(1e-4).unwrap().measure().volume;
+        let v0 = vol(&body);
+        // The edge runs from x = −45 to where the wall meets the cylinder, x = 55 − √(25² − 5²).
+        let len = 45.0 + 55.0 - (600f64).sqrt();
+        for (shape, area) in [(Shape::Round, 1.0 - std::f64::consts::PI / 4.0), (Shape::Flat, 0.5)] {
+            let out = blend(&body, &[Vec3::new(0.0, 10.0, -15.0)], 1.0, shape, "blend").unwrap();
+            assert!(out.validity().is_empty(), "{:?}", out.validity());
+            // A concave edge: the blend adds material.
+            let added = vol(&out) - v0;
+            assert!((added - area * len).abs() < area * len * 0.01, "{added} vs {}", area * len);
         }
     }
 
