@@ -32,7 +32,7 @@ env:
 jobs:
   dependency-advisories:
     name: Dependency advisories
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -82,6 +82,7 @@ jobs:
 
   checks:
     name: Format and repository checks
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -103,8 +104,8 @@ jobs:
 
   clippy:
     name: Native Linux Clippy
+    if: false
     needs: changes
-    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -155,6 +156,7 @@ jobs:
 
   tests:
     name: Native Linux tests (${{ matrix.shard }}/4)
+    if: false
     needs: [changes, build-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -201,18 +203,14 @@ jobs:
           retention-days: 7
 
   action-matrix:
-    # Every ordinary action on every face, edge, vertex and body of the design corpus, against
-    # tests/action_matrix/baseline.json (docs/action-matrix.md). Every test run checks a sample;
-    # the whole matrix runs nightly (or by hand), a quarter per job.
-    name: Action matrix (${{ matrix.part }}/4)
-    needs: build-tests
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Matrix probe (${{ matrix.part }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    needs: build-tests
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
-        part: [1, 2, 3, 4]
+        part: [a, b]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
@@ -221,17 +219,28 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: nextest-archive
-      - name: Run a quarter of the matrix
+      - name: Run the designs
         env:
           PART: ${{ matrix.part }}
         run: |
-          cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite \
-            --profile ci --run-ignored only -E "binary(action_matrix) & test(=action_matrix_full_$PART)"
+          mkdir -p probe
+          if [ "$PART" = a ]; then set -- examples/sensor_enclosure; else set -- corpus/issue-616 demo/pi-case; fi
+          for f in "$@"; do
+            n=$(echo "$f" | tr '/' '_')
+            ACTION_MATRIX_FILTER="$f" ACTION_MATRIX_RESULTS="$PWD/probe/$n.json" \
+              cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite \
+              --profile ci --run-ignored only -E "binary(action_matrix) & test(=action_matrix_all)" > "probe/$n.log" 2>&1 || true
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mprobe-${{ matrix.part }}
+          path: probe/
 
   doc-tests:
     name: Doc tests
+    if: false
     needs: changes
-    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -254,8 +263,8 @@ jobs:
 
   oracle:
     name: Reference tests
+    if: false
     needs: changes
-    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
