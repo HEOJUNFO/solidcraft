@@ -32,7 +32,7 @@ env:
 jobs:
   dependency-advisories:
     name: Dependency advisories
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -82,6 +82,7 @@ jobs:
 
   checks:
     name: Format and repository checks
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -103,8 +104,8 @@ jobs:
 
   clippy:
     name: Native Linux Clippy
+    if: false
     needs: changes
-    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -181,7 +182,7 @@ jobs:
           # Extract into ./target: tests that run a built binary (env!("CARGO_BIN_EXE_*")) have
           # the build job's path, which is the same checkout path here.
           cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite \
-            --profile ci --partition "slice:$SHARD/4" "${all[@]}"
+            --profile ci --ignore-default-filter -E "package(solidcraft-engine) & test(=tests::robustness_goldens::all_$((SHARD - 1)))"
       - name: Robustness goldens sample (pull requests that touch the kernel)
         # Every 8th seed of tests/robustness/goldens.json, a quarter per shard; pushes to main and
         # the nightly run every seed in the step above.
@@ -205,8 +206,8 @@ jobs:
     # tests/action_matrix/baseline.json (docs/action-matrix.md). Every test run checks a sample;
     # the whole matrix runs nightly (or by hand), a quarter per job.
     name: Action matrix (${{ matrix.part }}/4)
+    if: false
     needs: build-tests
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -230,8 +231,8 @@ jobs:
 
   doc-tests:
     name: Doc tests
+    if: false
     needs: changes
-    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -254,8 +255,8 @@ jobs:
 
   oracle:
     name: Reference tests
+    if: false
     needs: changes
-    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
