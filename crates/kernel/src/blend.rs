@@ -448,7 +448,13 @@ fn blend_geometry(
             let e3 = shared(ga, gb);
             curved(ga) || curved(gb) || [shared(i1, ga), shared(i2, gb), e3].iter().any(|e| e.as_ref().is_none_or(|e| !is_line(e)))
         };
-        let multi = one_surface || two_curved;
+        // Not where an end face runs on smoothly from a side (an earlier round): the corner build
+        // takes those ends.
+        let tangent = others.iter().any(|g| {
+            let n = |i: usize| faces.get(i).and_then(|f| crate::curveblend::project(f, p, None)).map(|x| x.1);
+            n(*g).is_some_and(|ng| [i1, i2].iter().filter_map(|i| n(*i)).any(|ns| ns.dot(ng) > 1.0 - 1e-6))
+        });
+        let multi = (one_surface || two_curved) && !tangent;
         if (ga == gb || multi)
             && let (Some(e1), Some(e2)) = (shared(i1, ga), shared(i2, gb))
             && (multi || faces.get(ga).and_then(|f| plane_normal(f)).is_none() || !is_line(&e1) || !is_line(&e2))
@@ -1046,9 +1052,8 @@ fn blend(body: &Body, edges: &[Vec3], r: f64, shape: Shape, what: &str) -> Resul
         cur = record::after(blend(&cur, &rest, r, shape, what)?, &cur, &counts);
         return Ok(record::after(blend(&cur, &loop_pts, r, shape, what)?, &cur, &counts));
     }
-    // A loop the loop blend refuses (walls it can't trim, seams that aren't straight) is
-    // blended edge by edge below instead: a ball rolls along its smooth chain.
-    let mut loop_err: Option<KernelError> = None;
+    // A loop the loop blend refuses for its shape (seams that aren't straight, walls it can't
+    // trim) is blended edge by edge below instead: a ball rolls along its smooth chain.
     if let Some(groups) = loop_groups(&cur, edges)? {
         let whole = || -> Result<Body> {
             let mut lc = cur.clone();
@@ -1068,16 +1073,12 @@ fn blend(body: &Body, edges: &[Vec3], r: f64, shape: Shape, what: &str) -> Resul
         };
         match whole() {
             Ok(b) => return Ok(b),
-            Err(e) => loop_err = Some(e),
+            // Too large for the loop is too large edge by edge too.
+            Err(e @ KernelError::TooLarge(_)) => return Err(e),
+            Err(_) => {}
         }
     }
-    // The loop blend's refusal stands where it found the blend too large and the edge by edge
-    // blend fails too.
-    let keep = |e: KernelError| match (&loop_err, e) {
-        (Some(le @ KernelError::TooLarge(_)), _) => le.clone(),
-        (_, e) => e,
-    };
-    blend_each(cur, edges, r, shape, what, &counts).map_err(keep)
+    blend_each(cur, edges, r, shape, what, &counts)
 }
 
 /// The edges blended one at a time (see [`blend`]), `cur` being the healed body.
@@ -1724,9 +1725,12 @@ pub fn chamfer(body: &Body, edges: &[Vec3], distance: f64) -> Result<Body> {
             }
             Ok(lc)
         };
-        // Refused, the loop is chamfered edge by edge below ([`blend`] falls back the same way).
-        if let Ok(b) = whole() {
-            return Ok(b);
+        // Refused for its shape, the loop is chamfered edge by edge below ([`blend`] falls back
+        // the same way); too large stays too large.
+        match whole() {
+            Ok(b) => return Ok(b),
+            Err(e @ KernelError::TooLarge(_)) => return Err(e),
+            Err(_) => {}
         }
     }
     for p in edges {
