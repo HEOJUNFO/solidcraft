@@ -1,0 +1,7 @@
+# Hole matrix cases that fail today (crates/engine/src/hole_matrix_tests.rs). A fix takes its case off.
+face/thin-plate/bottom/blind
+face/neighbour-coplanar/top/blind
+face/neighbour-coplanar/bottom/blind
+face/curved/radial/blind
+old-0.9/neighbour-coplanar/top
+old-0.9/thin-plate/bottom
